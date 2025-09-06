@@ -1,4 +1,5 @@
 import os
+import yt_dlp
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from modules import youtube, tiktok, instagram, facebook, search
@@ -22,14 +23,64 @@ async def start(client, message):
 
 @app.on_callback_query()
 async def callback(client, callback_query):
-    if callback_query.data == "help_cmd":
+    data = callback_query.data
+
+    # Help button
+    if data == "help_cmd":
         await callback_query.message.edit(HELP_TEXT, reply_markup=INLINE_BUTTONS)
+        return
+
+    # YouTube download buttons
+    if data.startswith(("yt_video", "yt_audio")):
+        action, url, user_id = data.split("|")
+        if str(callback_query.from_user.id) != user_id:
+            return await callback_query.answer("❌ This button is not for you.", show_alert=True)
+
+        await callback_query.answer()
+        await callback_query.message.edit("⏳ Downloading...")
+
+        os.makedirs("downloads", exist_ok=True)
+        ydl_opts = {'outtmpl': 'downloads/%(title)s.%(ext)s'}
+        if action == "yt_video":
+            ydl_opts['format'] = 'best'
+        else:
+            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192'
+            }]
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filepath = ydl.prepare_filename(info)
+                if action == "yt_audio":
+                    filepath = os.path.splitext(filepath)[0] + ".mp3"
+
+            meta = f"**Title:** {info.get('title')}\n"
+            meta += f"**Uploader:** {info.get('uploader')}\n"
+            meta += f"**Views:** {info.get('view_count')}\n"
+            meta += f"**Duration:** {info.get('duration')} sec\n"
+            meta += f"\nRequested by: [{callback_query.from_user.first_name}](tg://user?id={callback_query.from_user.id})"
+
+            await client.send_document(
+                chat_id=callback_query.message.chat.id,
+                document=filepath,
+                caption=meta
+            )
+            os.remove(filepath)
+            await callback_query.message.delete()
+
+        except Exception as e:
+            await client.send_message(callback_query.message.chat.id, f"❌ Error: {e}")
 
 @app.on_message(filters.text & filters.private)
 async def downloader(client, message):
     url = message.text.strip()
     if "youtube.com" in url or "youtu.be" in url:
-        await youtube.download_video(client, message, url)
+        buttons = youtube.get_buttons(url, message.from_user.id)
+        await message.reply_text("Choose download option:", reply_markup=buttons)
     elif "tiktok.com" in url:
         await tiktok.download_video(client, message, url)
     elif "instagram.com" in url:
